@@ -1,0 +1,15 @@
+app = "id-rent-backend"   # 请将 id-rent-backend 改为您自己想的唯一名称（例如 id-rent-zhangsan）
+primary_region = "hkg"    # 可选区域：hkg(香港), nrt(东京), sin(新加坡), fra(法兰克福), iad(美国)等
+
+[build]
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+
+[mounts]
+  source="data"
+  destination="/data"
