@@ -1,6 +1,7 @@
 import sqlite3
 import json
 import uuid
+import hashlib
 from datetime import datetime
 from fastapi import FastAPI, HTTPException, Header, Body
 from pydantic import BaseModel
@@ -24,6 +25,9 @@ def init_db():
     # 用户表
     c.execute('''CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        disabled INTEGER DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
     # 日志表
@@ -39,6 +43,8 @@ def init_db():
         value TEXT NOT NULL,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
+    # 插入默认配置（包括注册开关）
+    c.execute("INSERT OR IGNORE INTO config (key, value) VALUES ('allow_register', '1')")
     conn.commit()
     conn.close()
 
@@ -50,17 +56,21 @@ class ForbiddenConfig(BaseModel):
     normal: List[str]
     supervise: List[str]
 
-class PriceConfig(BaseModel):
-    price_map: dict
-    original_price_map: dict
+class RegisterData(BaseModel):
+    username: str
+    password: str
 
-# ---------- 接口 ----------
+class LoginData(BaseModel):
+    username: str
+    password: str
+
+# ---------- 启动初始化 ----------
 @app.on_event("startup")
 def startup():
     init_db()
-    # 如果配置表为空，插入默认数据
     conn = get_db()
     c = conn.cursor()
+    # 其他默认配置（与之前相同）
     c.execute("SELECT key FROM config WHERE key='id_area_map'")
     if not c.fetchone():
         default_area = {"110000": "北京市", "110101": "北京市东城区"}
@@ -74,7 +84,6 @@ def startup():
         c.execute("INSERT INTO config (key, value) VALUES (?, ?)", ("forbidden_areas", json.dumps(default_forbidden)))
     c.execute("SELECT key FROM config WHERE key='price_config'")
     if not c.fetchone():
-        # 精简版默认价格配置（完整版可在客户端修改后上传）
         default_price = {
             "price_map": {
                 "正常": {
@@ -202,18 +211,88 @@ def startup():
 
 # ========== API 路由 ==========
 
-# 1. 用户注册
+# 用户注册（检查注册开关）
 @app.post("/user/register")
-def register():
-    user_id = str(uuid.uuid4())
+def register(data: RegisterData):
+    username = data.username.strip()
+    password = data.password.strip()
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="用户名和密码不能为空")
     conn = get_db()
     c = conn.cursor()
-    c.execute("INSERT INTO users (id) VALUES (?)", (user_id,))
+    # 检查注册开关
+    c.execute("SELECT value FROM config WHERE key='allow_register'")
+    row = c.fetchone()
+    allow_register = int(row[0]) if row else 1
+    if allow_register == 0:
+        conn.close()
+        raise HTTPException(status_code=403, detail="管理员已关闭注册，请联系管理员")
+    # 检查用户名是否已存在
+    c.execute("SELECT id FROM users WHERE username=?", (username,))
+    if c.fetchone():
+        conn.close()
+        raise HTTPException(status_code=400, detail="用户名已存在")
+    user_id = str(uuid.uuid4())
+    password_hash = hashlib.sha256(password.encode()).hexdigest()
+    c.execute("INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)", (user_id, username, password_hash))
     conn.commit()
     conn.close()
-    return {"user_id": user_id}
+    return {"user_id": user_id, "username": username}
 
-# 2. 上传日志
+# 用户登录（含禁用检查）
+@app.post("/user/login")
+def login(data: LoginData):
+    username = data.username.strip()
+    password = data.password.strip()
+    if not username or not password:
+        raise HTTPException(status_code=400, detail="用户名和密码不能为空")
+    conn = get_db()
+    c = conn.cursor()
+    # 确保 disabled 列存在
+    c.execute("PRAGMA table_info(users)")
+    columns = [col[1] for col in c.fetchall()]
+    if "disabled" not in columns:
+        c.execute("ALTER TABLE users ADD COLUMN disabled INTEGER DEFAULT 0")
+    c.execute("SELECT id, password_hash, disabled FROM users WHERE username=?", (username,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+    if row[2] == 1:
+        raise HTTPException(status_code=403, detail="该账号已被禁用，请联系管理员")
+    password_hash = hashlib.sha256(password.encode()).hexdigest()
+    if password_hash != row[1]:
+        raise HTTPException(status_code=401, detail="用户名或密码错误")
+    return {"user_id": row[0], "username": username}
+
+# 获取注册开关状态
+@app.get("/config/register_status")
+def get_register_status():
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT value FROM config WHERE key='allow_register'")
+    row = c.fetchone()
+    conn.close()
+    allow = int(row[0]) if row else 1
+    return {"allow_register": allow}
+
+# 设置注册开关（需管理员密码）
+@app.post("/config/register_status")
+def set_register_status(data: dict = Body(...)):
+    password = data.get("password")
+    allow = data.get("allow_register")
+    if password != "000":  # 使用统一管理员密码
+        raise HTTPException(status_code=403, detail="Invalid admin password")
+    if allow not in [0, 1]:
+        raise HTTPException(status_code=400, detail="allow_register 必须为 0 或 1")
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("UPDATE config SET value=? WHERE key='allow_register'", (str(allow),))
+    conn.commit()
+    conn.close()
+    return {"status": "ok", "allow_register": allow}
+
+# 上传日志
 @app.post("/log/upload")
 def upload_log(data: dict = Body(...), user_id: str = Header(...)):
     conn = get_db()
@@ -223,7 +302,7 @@ def upload_log(data: dict = Body(...), user_id: str = Header(...)):
     conn.close()
     return {"status": "ok"}
 
-# 3. 获取用户日志
+# 获取用户日志
 @app.get("/log/list")
 def list_logs(user_id: str):
     conn = get_db()
@@ -236,7 +315,7 @@ def list_logs(user_id: str):
         result.append({"content": json.loads(row[0]), "time": row[1]})
     return {"logs": result}
 
-# 4. 批量迁移日志
+# 批量迁移日志
 @app.post("/log/migrate")
 def migrate_logs(data: LogData, user_id: str = Header(...)):
     conn = get_db()
@@ -249,7 +328,7 @@ def migrate_logs(data: LogData, user_id: str = Header(...)):
     conn.close()
     return {"count": count}
 
-# 5. 获取禁区配置
+# 获取禁区配置
 @app.get("/config/forbidden")
 def get_forbidden():
     conn = get_db()
@@ -261,7 +340,7 @@ def get_forbidden():
         return json.loads(row[0])
     return {"normal": [], "supervise": []}
 
-# 6. 更新禁区配置
+# 更新禁区配置
 @app.put("/config/forbidden")
 def update_forbidden(data: ForbiddenConfig):
     conn = get_db()
@@ -271,7 +350,7 @@ def update_forbidden(data: ForbiddenConfig):
     conn.close()
     return {"status": "ok"}
 
-# 7. 获取价格配置
+# 获取价格配置
 @app.get("/config/price")
 def get_price():
     conn = get_db()
@@ -283,7 +362,7 @@ def get_price():
         return json.loads(row[0])
     return {}
 
-# 8. 更新价格配置
+# 更新价格配置
 @app.put("/config/price")
 def update_price(data: dict = Body(...)):
     conn = get_db()
@@ -293,7 +372,7 @@ def update_price(data: dict = Body(...)):
     conn.close()
     return {"status": "ok"}
 
-# 9. 获取身份证区域表
+# 获取身份证区域表
 @app.get("/config/id_area")
 def get_id_area():
     conn = get_db()
@@ -305,7 +384,7 @@ def get_id_area():
         return json.loads(row[0])
     return {}
 
-# 10. 更新身份证区域表（完整导入用）
+# 更新身份证区域表
 @app.put("/config/id_area")
 def update_id_area(data: dict = Body(...)):
     conn = get_db()
@@ -315,8 +394,8 @@ def update_id_area(data: dict = Body(...)):
     conn.close()
     return {"status": "ok"}
 
-# ========== 新增：管理员查看所有日志 ==========
-ADMIN_PASSWORD = "000"  # 默认密码，可改为环境变量
+# 管理员查看所有日志
+ADMIN_PASSWORD = "000"
 
 @app.post("/log/all")
 def get_all_logs(data: dict = Body(...)):
@@ -337,7 +416,53 @@ def get_all_logs(data: dict = Body(...)):
         logs.append({"user_id": row[0], "content": content, "time": row[2]})
     return {"logs": logs}
 
-# 根路径
+# 管理员获取所有用户
+@app.post("/admin/users")
+def get_users(data: dict = Body(...)):
+    if data.get("password") != ADMIN_PASSWORD:
+        raise HTTPException(status_code=403, detail="Invalid admin password")
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("PRAGMA table_info(users)")
+    columns = [col[1] for col in c.fetchall()]
+    if "disabled" not in columns:
+        c.execute("ALTER TABLE users ADD COLUMN disabled INTEGER DEFAULT 0")
+    c.execute("SELECT id, username, created_at, disabled FROM users ORDER BY created_at DESC")
+    rows = c.fetchall()
+    conn.close()
+    users = [{"id": row[0], "username": row[1], "created_at": row[2], "disabled": row[3]} for row in rows]
+    return {"users": users}
+
+# 禁用用户
+@app.post("/admin/users/disable")
+def disable_user(data: dict = Body(...)):
+    if data.get("password") != ADMIN_PASSWORD:
+        raise HTTPException(status_code=403, detail="Invalid admin password")
+    user_id = data.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Missing user_id")
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("UPDATE users SET disabled=1 WHERE id=?", (user_id,))
+    conn.commit()
+    conn.close()
+    return {"status": "ok"}
+
+# 启用用户
+@app.post("/admin/users/enable")
+def enable_user(data: dict = Body(...)):
+    if data.get("password") != ADMIN_PASSWORD:
+        raise HTTPException(status_code=403, detail="Invalid admin password")
+    user_id = data.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Missing user_id")
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("UPDATE users SET disabled=0 WHERE id=?", (user_id,))
+    conn.commit()
+    conn.close()
+    return {"status": "ok"}
+
 @app.get("/")
 def root():
     return {"message": "ID Rent System API is running"}
