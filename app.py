@@ -63,7 +63,6 @@ def startup():
     c = conn.cursor()
     c.execute("SELECT key FROM config WHERE key='id_area_map'")
     if not c.fetchone():
-        # 插入最小身份证区域（后续可以上传完整）
         default_area = {"110000": "北京市", "110101": "北京市东城区"}
         c.execute("INSERT INTO config (key, value) VALUES (?, ?)", ("id_area_map", json.dumps(default_area)))
     c.execute("SELECT key FROM config WHERE key='forbidden_areas'")
@@ -75,7 +74,7 @@ def startup():
         c.execute("INSERT INTO config (key, value) VALUES (?, ?)", ("forbidden_areas", json.dumps(default_forbidden)))
     c.execute("SELECT key FROM config WHERE key='price_config'")
     if not c.fetchone():
-        # 精简版默认价格配置（足够启动，后续可通过客户端完整更新）
+        # 精简版默认价格配置（完整版可在客户端修改后上传）
         default_price = {
             "price_map": {
                 "正常": {
@@ -193,7 +192,7 @@ def startup():
                     "900": {"无监": ("1350-900-450-110", 638), "有监": ("1350-900-450-110", 638)},
                     "1000": {"无监": ("1500-1000-500-130", 688), "有监": ("1500-1000-500-130", 688)},
                     "1100": {"无监": ("1650-1100-550-140", 738), "有监": ("1650-1100-550-140", 738)},
-                    "1200": {"无监": ("1800-1200-600-150", 788), "有监": ("1800-1200-600-150", 788)}
+                    "1200": {"无监": ("1800-1200-600-150", 788), "有监": ("1800-1200-600-150", 788)},
                 }
             }
         }
@@ -315,6 +314,28 @@ def update_id_area(data: dict = Body(...)):
     conn.commit()
     conn.close()
     return {"status": "ok"}
+
+# ========== 新增：管理员查看所有日志 ==========
+ADMIN_PASSWORD = "000"  # 默认密码，可改为环境变量
+
+@app.post("/log/all")
+def get_all_logs(data: dict = Body(...)):
+    password = data.get("password")
+    if password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=403, detail="Invalid password")
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT user_id, content, created_at FROM logs ORDER BY created_at DESC")
+    rows = c.fetchall()
+    conn.close()
+    logs = []
+    for row in rows:
+        try:
+            content = json.loads(row[1])
+        except:
+            content = {}
+        logs.append({"user_id": row[0], "content": content, "time": row[2]})
+    return {"logs": logs}
 
 # 根路径
 @app.get("/")
