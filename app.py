@@ -58,11 +58,13 @@ def init_db():
     # 插入默认配置
     c.execute("INSERT OR IGNORE INTO config (key, value) VALUES ('allow_register', '1')")
     c.execute("INSERT OR IGNORE INTO config (key, value) VALUES ('id_area_map', '{\"110000\": \"北京市\", \"110101\": \"北京市东城区\"}')")
+    
     default_forbidden = {
         "normal": ["新疆维吾尔自治区", "甘肃省", "西藏自治区", "四川省彝族", "汕尾市", "江西省赣州市寻乌县"],
         "supervise": []
     }
     c.execute("INSERT OR IGNORE INTO config (key, value) VALUES ('forbidden_areas', ?)", (json.dumps(default_forbidden),))
+    
     default_price = {
         "price_map": {
             "正常": {
@@ -277,7 +279,7 @@ def get_register_status():
     allow = int(row[0]) if row else 1
     return {"allow_register": allow}
 
-# 设置注册开关
+# 设置注册开关（需管理员密码）
 @app.post("/config/register_status")
 def set_register_status(data: dict = Body(...)):
     password = data.get("password")
@@ -464,7 +466,7 @@ def enable_user(data: dict = Body(...)):
     conn.close()
     return {"status": "ok"}
 
-# ========== 新增：清空日志（管理员） ==========
+# 清空所有日志（管理员）
 @app.post("/admin/clear_logs")
 def clear_logs(data: dict = Body(...)):
     if data.get("password") != ADMIN_PASSWORD:
