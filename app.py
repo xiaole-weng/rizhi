@@ -22,14 +22,23 @@ def init_db():
     os.makedirs("/data", exist_ok=True)
     conn = get_db()
     c = conn.cursor()
-    # 用户表
+    # 用户表 - 先创建表（如果不存在）
     c.execute('''CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
-        username TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
+        username TEXT UNIQUE,
+        password_hash TEXT,
         disabled INTEGER DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
+    # 检查并添加缺失列
+    c.execute("PRAGMA table_info(users)")
+    columns = [col[1] for col in c.fetchall()]
+    if "username" not in columns:
+        c.execute("ALTER TABLE users ADD COLUMN username TEXT UNIQUE")
+    if "password_hash" not in columns:
+        c.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+    if "disabled" not in columns:
+        c.execute("ALTER TABLE users ADD COLUMN disabled INTEGER DEFAULT 0")
     # 日志表
     c.execute('''CREATE TABLE IF NOT EXISTS logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -45,32 +54,7 @@ def init_db():
     )''')
     # 插入默认配置（包括注册开关）
     c.execute("INSERT OR IGNORE INTO config (key, value) VALUES ('allow_register', '1')")
-    conn.commit()
-    conn.close()
-
-# ---------- 模型 ----------
-class LogData(BaseModel):
-    logs: List[dict]
-
-class ForbiddenConfig(BaseModel):
-    normal: List[str]
-    supervise: List[str]
-
-class RegisterData(BaseModel):
-    username: str
-    password: str
-
-class LoginData(BaseModel):
-    username: str
-    password: str
-
-# ---------- 启动初始化 ----------
-@app.on_event("startup")
-def startup():
-    init_db()
-    conn = get_db()
-    c = conn.cursor()
-    # 其他默认配置（与之前相同）
+    # 其他默认配置（价格、禁区等）
     c.execute("SELECT key FROM config WHERE key='id_area_map'")
     if not c.fetchone():
         default_area = {"110000": "北京市", "110101": "北京市东城区"}
@@ -209,9 +193,30 @@ def startup():
     conn.commit()
     conn.close()
 
+# ---------- 模型 ----------
+class LogData(BaseModel):
+    logs: List[dict]
+
+class ForbiddenConfig(BaseModel):
+    normal: List[str]
+    supervise: List[str]
+
+class RegisterData(BaseModel):
+    username: str
+    password: str
+
+class LoginData(BaseModel):
+    username: str
+    password: str
+
+# ---------- 启动初始化 ----------
+@app.on_event("startup")
+def startup():
+    init_db()  # 已包含所有必要的列检查和初始化
+
 # ========== API 路由 ==========
 
-# 用户注册（检查注册开关）
+# 用户注册
 @app.post("/user/register")
 def register(data: RegisterData):
     username = data.username.strip()
@@ -248,11 +253,6 @@ def login(data: LoginData):
         raise HTTPException(status_code=400, detail="用户名和密码不能为空")
     conn = get_db()
     c = conn.cursor()
-    # 确保 disabled 列存在
-    c.execute("PRAGMA table_info(users)")
-    columns = [col[1] for col in c.fetchall()]
-    if "disabled" not in columns:
-        c.execute("ALTER TABLE users ADD COLUMN disabled INTEGER DEFAULT 0")
     c.execute("SELECT id, password_hash, disabled FROM users WHERE username=?", (username,))
     row = c.fetchone()
     conn.close()
@@ -281,7 +281,7 @@ def get_register_status():
 def set_register_status(data: dict = Body(...)):
     password = data.get("password")
     allow = data.get("allow_register")
-    if password != "000":  # 使用统一管理员密码
+    if password != "000":
         raise HTTPException(status_code=403, detail="Invalid admin password")
     if allow not in [0, 1]:
         raise HTTPException(status_code=400, detail="allow_register 必须为 0 或 1")
@@ -423,10 +423,6 @@ def get_users(data: dict = Body(...)):
         raise HTTPException(status_code=403, detail="Invalid admin password")
     conn = get_db()
     c = conn.cursor()
-    c.execute("PRAGMA table_info(users)")
-    columns = [col[1] for col in c.fetchall()]
-    if "disabled" not in columns:
-        c.execute("ALTER TABLE users ADD COLUMN disabled INTEGER DEFAULT 0")
     c.execute("SELECT id, username, created_at, disabled FROM users ORDER BY created_at DESC")
     rows = c.fetchall()
     conn.close()
