@@ -29,7 +29,7 @@ def init_db():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
     
-    # 检查并添加缺失列（兼容旧表结构，不加 UNIQUE 约束避免错误）
+    # 检查并添加缺失列（不加 UNIQUE 避免错误）
     c.execute("PRAGMA table_info(users)")
     existing_columns = [col[1] for col in c.fetchall()]
     
@@ -57,18 +57,12 @@ def init_db():
     
     # 插入默认配置
     c.execute("INSERT OR IGNORE INTO config (key, value) VALUES ('allow_register', '1')")
-    
-    # 插入默认身份证区域表（最小集）
     c.execute("INSERT OR IGNORE INTO config (key, value) VALUES ('id_area_map', '{\"110000\": \"北京市\", \"110101\": \"北京市东城区\"}')")
-    
-    # 插入默认禁区配置
     default_forbidden = {
         "normal": ["新疆维吾尔自治区", "甘肃省", "西藏自治区", "四川省彝族", "汕尾市", "江西省赣州市寻乌县"],
         "supervise": []
     }
     c.execute("INSERT OR IGNORE INTO config (key, value) VALUES ('forbidden_areas', ?)", (json.dumps(default_forbidden),))
-    
-    # 插入默认价格配置（精简版，后面可更新）
     default_price = {
         "price_map": {
             "正常": {
@@ -283,12 +277,12 @@ def get_register_status():
     allow = int(row[0]) if row else 1
     return {"allow_register": allow}
 
-# 设置注册开关（需管理员密码）
+# 设置注册开关
 @app.post("/config/register_status")
 def set_register_status(data: dict = Body(...)):
     password = data.get("password")
     allow = data.get("allow_register")
-    if password != "000":  # 使用统一管理员密码
+    if password != "000":
         raise HTTPException(status_code=403, detail="Invalid admin password")
     if allow not in [0, 1]:
         raise HTTPException(status_code=400, detail="allow_register 必须为 0 或 1")
@@ -470,13 +464,10 @@ def enable_user(data: dict = Body(...)):
     conn.close()
     return {"status": "ok"}
 
-@app.get("/")
-def root():
-    return {"message": "ID Rent System API is running"}
-
+# ========== 新增：清空日志（管理员） ==========
 @app.post("/admin/clear_logs")
 def clear_logs(data: dict = Body(...)):
-    if data.get("password") != "000":
+    if data.get("password") != ADMIN_PASSWORD:
         raise HTTPException(status_code=403, detail="Invalid admin password")
     conn = get_db()
     c = conn.cursor()
@@ -484,3 +475,7 @@ def clear_logs(data: dict = Body(...)):
     conn.commit()
     conn.close()
     return {"status": "ok"}
+
+@app.get("/")
+def root():
+    return {"message": "ID Rent System API is running"}
