@@ -23,13 +23,11 @@ def init_db():
     conn = get_db()
     c = conn.cursor()
     
-    # 创建用户表（如果不存在）
     c.execute('''CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
     
-    # 检查并添加缺失列（不加 UNIQUE 避免错误）
     c.execute("PRAGMA table_info(users)")
     existing_columns = [col[1] for col in c.fetchall()]
     
@@ -40,7 +38,6 @@ def init_db():
     if "disabled" not in existing_columns:
         c.execute("ALTER TABLE users ADD COLUMN disabled INTEGER DEFAULT 0")
     
-    # 创建日志表
     c.execute('''CREATE TABLE IF NOT EXISTS logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id TEXT REFERENCES users(id),
@@ -48,14 +45,12 @@ def init_db():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
     
-    # 创建配置表
     c.execute('''CREATE TABLE IF NOT EXISTS config (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )''')
     
-    # 插入默认配置
     c.execute("INSERT OR IGNORE INTO config (key, value) VALUES ('allow_register', '1')")
     c.execute("INSERT OR IGNORE INTO config (key, value) VALUES ('id_area_map', '{\"110000\": \"北京市\", \"110101\": \"北京市东城区\"}')")
     
@@ -214,7 +209,6 @@ def startup():
 
 # ========== API 路由 ==========
 
-# 用户注册
 @app.post("/user/register")
 def register(data: RegisterData):
     username = data.username.strip()
@@ -223,14 +217,12 @@ def register(data: RegisterData):
         raise HTTPException(status_code=400, detail="用户名和密码不能为空")
     conn = get_db()
     c = conn.cursor()
-    # 检查注册开关
     c.execute("SELECT value FROM config WHERE key='allow_register'")
     row = c.fetchone()
     allow_register = int(row[0]) if row else 1
     if allow_register == 0:
         conn.close()
         raise HTTPException(status_code=403, detail="管理员已关闭注册，请联系管理员")
-    # 检查用户名是否已存在
     c.execute("SELECT id FROM users WHERE username=?", (username,))
     if c.fetchone():
         conn.close()
@@ -242,7 +234,6 @@ def register(data: RegisterData):
     conn.close()
     return {"user_id": user_id, "username": username}
 
-# 用户登录（含禁用检查）
 @app.post("/user/login")
 def login(data: LoginData):
     username = data.username.strip()
@@ -251,7 +242,6 @@ def login(data: LoginData):
         raise HTTPException(status_code=400, detail="用户名和密码不能为空")
     conn = get_db()
     c = conn.cursor()
-    # 确保 disabled 列存在
     c.execute("PRAGMA table_info(users)")
     columns = [col[1] for col in c.fetchall()]
     if "disabled" not in columns:
@@ -268,7 +258,6 @@ def login(data: LoginData):
         raise HTTPException(status_code=401, detail="用户名或密码错误")
     return {"user_id": row[0], "username": username}
 
-# 获取注册开关状态
 @app.get("/config/register_status")
 def get_register_status():
     conn = get_db()
@@ -279,7 +268,6 @@ def get_register_status():
     allow = int(row[0]) if row else 1
     return {"allow_register": allow}
 
-# 设置注册开关（需管理员密码）
 @app.post("/config/register_status")
 def set_register_status(data: dict = Body(...)):
     password = data.get("password")
@@ -295,7 +283,6 @@ def set_register_status(data: dict = Body(...)):
     conn.close()
     return {"status": "ok", "allow_register": allow}
 
-# 上传日志
 @app.post("/log/upload")
 def upload_log(data: dict = Body(...), user_id: str = Header(...)):
     conn = get_db()
@@ -305,20 +292,22 @@ def upload_log(data: dict = Body(...), user_id: str = Header(...)):
     conn.close()
     return {"status": "ok"}
 
-# 获取用户日志
 @app.get("/log/list")
 def list_logs(user_id: str):
     conn = get_db()
     c = conn.cursor()
-    c.execute("SELECT content, created_at FROM logs WHERE user_id=? ORDER BY created_at DESC", (user_id,))
+    c.execute("SELECT id, content, created_at FROM logs WHERE user_id=? ORDER BY created_at DESC", (user_id,))
     rows = c.fetchall()
     conn.close()
     result = []
     for row in rows:
-        result.append({"content": json.loads(row[0]), "time": row[1]})
+        try:
+            content = json.loads(row[1])
+        except:
+            content = {}
+        result.append({"id": row[0], "content": content, "time": row[2]})
     return {"logs": result}
 
-# 批量迁移日志
 @app.post("/log/migrate")
 def migrate_logs(data: LogData, user_id: str = Header(...)):
     conn = get_db()
@@ -331,7 +320,6 @@ def migrate_logs(data: LogData, user_id: str = Header(...)):
     conn.close()
     return {"count": count}
 
-# 获取禁区配置
 @app.get("/config/forbidden")
 def get_forbidden():
     conn = get_db()
@@ -343,7 +331,6 @@ def get_forbidden():
         return json.loads(row[0])
     return {"normal": [], "supervise": []}
 
-# 更新禁区配置
 @app.put("/config/forbidden")
 def update_forbidden(data: ForbiddenConfig):
     conn = get_db()
@@ -353,7 +340,6 @@ def update_forbidden(data: ForbiddenConfig):
     conn.close()
     return {"status": "ok"}
 
-# 获取价格配置
 @app.get("/config/price")
 def get_price():
     conn = get_db()
@@ -365,7 +351,6 @@ def get_price():
         return json.loads(row[0])
     return {}
 
-# 更新价格配置
 @app.put("/config/price")
 def update_price(data: dict = Body(...)):
     conn = get_db()
@@ -375,7 +360,6 @@ def update_price(data: dict = Body(...)):
     conn.close()
     return {"status": "ok"}
 
-# 获取身份证区域表
 @app.get("/config/id_area")
 def get_id_area():
     conn = get_db()
@@ -387,7 +371,6 @@ def get_id_area():
         return json.loads(row[0])
     return {}
 
-# 更新身份证区域表
 @app.put("/config/id_area")
 def update_id_area(data: dict = Body(...)):
     conn = get_db()
@@ -397,7 +380,6 @@ def update_id_area(data: dict = Body(...)):
     conn.close()
     return {"status": "ok"}
 
-# 管理员查看所有日志
 ADMIN_PASSWORD = "000"
 
 @app.post("/log/all")
@@ -407,19 +389,69 @@ def get_all_logs(data: dict = Body(...)):
         raise HTTPException(status_code=403, detail="Invalid password")
     conn = get_db()
     c = conn.cursor()
-    c.execute("SELECT user_id, content, created_at FROM logs ORDER BY created_at DESC")
+    c.execute("SELECT id, user_id, content, created_at FROM logs ORDER BY created_at DESC")
     rows = c.fetchall()
     conn.close()
     logs = []
     for row in rows:
         try:
-            content = json.loads(row[1])
+            content = json.loads(row[2])
         except:
             content = {}
-        logs.append({"user_id": row[0], "content": content, "time": row[2]})
+        logs.append({
+            "id": row[0],
+            "user_id": row[1],
+            "content": content,
+            "time": row[3]
+        })
     return {"logs": logs}
 
-# 管理员获取所有用户
+@app.put("/log/update")
+def update_log(data: dict = Body(...)):
+    if data.get("password") != ADMIN_PASSWORD:
+        raise HTTPException(status_code=403, detail="Invalid admin password")
+    log_id = data.get("log_id")
+    new_content = data.get("content")
+    if not log_id or not new_content:
+        raise HTTPException(status_code=400, detail="Missing log_id or content")
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("UPDATE logs SET content=? WHERE id=?", (json.dumps(new_content), log_id))
+    if c.rowcount == 0:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Log not found")
+    conn.commit()
+    conn.close()
+    return {"status": "ok"}
+
+@app.delete("/log/delete")
+def delete_log(data: dict = Body(...)):
+    if data.get("password") != ADMIN_PASSWORD:
+        raise HTTPException(status_code=403, detail="Invalid admin password")
+    log_id = data.get("log_id")
+    if not log_id:
+        raise HTTPException(status_code=400, detail="Missing log_id")
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("DELETE FROM logs WHERE id=?", (log_id,))
+    if c.rowcount == 0:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Log not found")
+    conn.commit()
+    conn.close()
+    return {"status": "ok"}
+
+@app.post("/admin/clear_logs")
+def clear_logs(data: dict = Body(...)):
+    if data.get("password") != ADMIN_PASSWORD:
+        raise HTTPException(status_code=403, detail="Invalid admin password")
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("DELETE FROM logs")
+    conn.commit()
+    conn.close()
+    return {"status": "ok"}
+
 @app.post("/admin/users")
 def get_users(data: dict = Body(...)):
     if data.get("password") != ADMIN_PASSWORD:
@@ -436,7 +468,6 @@ def get_users(data: dict = Body(...)):
     users = [{"id": row[0], "username": row[1], "created_at": row[2], "disabled": row[3]} for row in rows]
     return {"users": users}
 
-# 禁用用户
 @app.post("/admin/users/disable")
 def disable_user(data: dict = Body(...)):
     if data.get("password") != ADMIN_PASSWORD:
@@ -451,7 +482,6 @@ def disable_user(data: dict = Body(...)):
     conn.close()
     return {"status": "ok"}
 
-# 启用用户
 @app.post("/admin/users/enable")
 def enable_user(data: dict = Body(...)):
     if data.get("password") != ADMIN_PASSWORD:
@@ -462,18 +492,6 @@ def enable_user(data: dict = Body(...)):
     conn = get_db()
     c = conn.cursor()
     c.execute("UPDATE users SET disabled=0 WHERE id=?", (user_id,))
-    conn.commit()
-    conn.close()
-    return {"status": "ok"}
-
-# 清空所有日志（管理员）
-@app.post("/admin/clear_logs")
-def clear_logs(data: dict = Body(...)):
-    if data.get("password") != ADMIN_PASSWORD:
-        raise HTTPException(status_code=403, detail="Invalid admin password")
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("DELETE FROM logs")
     conn.commit()
     conn.close()
     return {"status": "ok"}
