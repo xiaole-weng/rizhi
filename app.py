@@ -473,3 +473,14 @@ def enable_user(data: dict = Body(...)):
 @app.get("/")
 def root():
     return {"message": "ID Rent System API is running"}
+
+@app.post("/admin/clear_logs")
+def clear_logs(data: dict = Body(...)):
+    if data.get("password") != "000":
+        raise HTTPException(status_code=403, detail="Invalid admin password")
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("DELETE FROM logs")
+    conn.commit()
+    conn.close()
+    return {"status": "ok"}
