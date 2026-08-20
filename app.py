@@ -496,6 +496,51 @@ def enable_user(data: dict = Body(...)):
     conn.close()
     return {"status": "ok"}
 
+# 重置用户密码（管理员）
+@app.route('/admin/users/reset_password', methods=['POST'])
+def admin_reset_password():
+    data = request.get_json()
+    admin_pwd = data.get('password')
+    if admin_pwd != '000':
+        return jsonify({'detail': '管理员密码错误'}), 403
+
+    user_id = data.get('user_id')
+    new_password = data.get('new_password')
+    if not user_id or not new_password:
+        return jsonify({'detail': '缺少参数'}), 400
+
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'detail': '用户不存在'}), 404
+
+    # 假设用户密码字段为 `password_hash`，存储的是哈希值。
+    # 这里直接更新为新密码的哈希值（建议使用 bcrypt 等）
+    user.password_hash = generate_password_hash(new_password)
+    db.session.commit()
+    return jsonify({'message': '密码已重置'}), 200
+
+# 删除用户（管理员）
+@app.route('/admin/users/delete', methods=['POST'])
+def admin_delete_user():
+    data = request.get_json()
+    admin_pwd = data.get('password')
+    if admin_pwd != '000':
+        return jsonify({'detail': '管理员密码错误'}), 403
+
+    user_id = data.get('user_id')
+    if not user_id:
+        return jsonify({'detail': '缺少用户ID'}), 400
+
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'detail': '用户不存在'}), 404
+
+    # 可选：软删除（设置 disabled=1）或永久删除
+    # 如果您的用户表有 disabled 字段，可改为软删除
+    db.session.delete(user)
+    db.session.commit()
+    return jsonify({'message': '用户已删除'}), 200
+    
 @app.get("/")
 def root():
     return {"message": "ID Rent System API is running"}
