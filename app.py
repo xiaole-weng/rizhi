@@ -496,50 +496,61 @@ def enable_user(data: dict = Body(...)):
     conn.close()
     return {"status": "ok"}
 
-# 重置用户密码（管理员）
-@app.route('/admin/users/reset_password', methods=['POST'])
-def admin_reset_password():
-    data = request.get_json()
+# ==================== 管理员：重置密码 ====================
+@app.post("/admin/users/reset_password")
+def admin_reset_password(data: dict = Body(...)):
     admin_pwd = data.get('password')
     if admin_pwd != '000':
-        return jsonify({'detail': '管理员密码错误'}), 403
+        raise HTTPException(status_code=403, detail="管理员密码错误")
 
     user_id = data.get('user_id')
     new_password = data.get('new_password')
     if not user_id or not new_password:
-        return jsonify({'detail': '缺少参数'}), 400
+        raise HTTPException(status_code=400, detail="缺少参数")
 
-    user = User.query.get(user_id)
-    if not user:
-        return jsonify({'detail': '用户不存在'}), 404
+    conn = get_db()
+    c = conn.cursor()
+    # 检查用户是否存在
+    c.execute("SELECT id FROM users WHERE id=?", (user_id,))
+    if not c.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="用户不存在")
 
-    # 假设用户密码字段为 `password_hash`，存储的是哈希值。
-    # 这里直接更新为新密码的哈希值（建议使用 bcrypt 等）
-    user.password_hash = generate_password_hash(new_password)
-    db.session.commit()
-    return jsonify({'message': '密码已重置'}), 200
+    # 更新密码（使用 SHA256 哈希）
+    password_hash = hashlib.sha256(new_password.encode()).hexdigest()
+    c.execute("UPDATE users SET password_hash=? WHERE id=?", (password_hash, user_id))
+    conn.commit()
+    conn.close()
+    return {"status": "ok", "message": "密码已重置"}
 
-# 删除用户（管理员）
-@app.route('/admin/users/delete', methods=['POST'])
-def admin_delete_user():
-    data = request.get_json()
+
+# ==================== 管理员：删除用户 ====================
+@app.post("/admin/users/delete")
+def admin_delete_user(data: dict = Body(...)):
     admin_pwd = data.get('password')
     if admin_pwd != '000':
-        return jsonify({'detail': '管理员密码错误'}), 403
+        raise HTTPException(status_code=403, detail="管理员密码错误")
 
     user_id = data.get('user_id')
     if not user_id:
-        return jsonify({'detail': '缺少用户ID'}), 400
+        raise HTTPException(status_code=400, detail="缺少用户ID")
 
-    user = User.query.get(user_id)
-    if not user:
-        return jsonify({'detail': '用户不存在'}), 404
+    conn = get_db()
+    c = conn.cursor()
+    # 检查用户是否存在
+    c.execute("SELECT id FROM users WHERE id=?", (user_id,))
+    if not c.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="用户不存在")
 
-    # 可选：软删除（设置 disabled=1）或永久删除
-    # 如果您的用户表有 disabled 字段，可改为软删除
-    db.session.delete(user)
-    db.session.commit()
-    return jsonify({'message': '用户已删除'}), 200
+    # 软删除：设置 disabled=1（推荐），或硬删除
+    # 硬删除会丢失数据，建议软删除
+    # 这里使用硬删除（因为您之前未使用 disabled，但您已添加 disabled 字段）
+    # 如果希望软删除，改为 UPDATE users SET disabled=1 WHERE id=?
+    c.execute("DELETE FROM users WHERE id=?", (user_id,))
+    conn.commit()
+    conn.close()
+    return {"status": "ok", "message": "用户已删除"}
     
 @app.get("/")
 def root():
