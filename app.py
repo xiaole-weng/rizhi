@@ -6,6 +6,7 @@ from datetime import datetime
 from fastapi import FastAPI, HTTPException, Header, Body
 from pydantic import BaseModel
 from typing import List, Dict, Optional
+import os
 
 app = FastAPI(title="ID租用系统云端API", version="1.0")
 
@@ -18,7 +19,6 @@ def get_db():
     return conn
 
 def init_db():
-    import os
     os.makedirs("/data", exist_ok=True)
     conn = get_db()
     c = conn.cursor()
@@ -182,6 +182,20 @@ def init_db():
         }
     }
     c.execute("INSERT OR IGNORE INTO config (key, value) VALUES ('price_config', ?)", (json.dumps(default_price),))
+    
+    # ==================== 新增：专属模板库表 ====================
+    c.execute('''CREATE TABLE IF NOT EXISTS template_library (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+    # ==================== 新增：用户-模板指派表 ====================
+    c.execute('''CREATE TABLE IF NOT EXISTS user_assign (
+        user_id TEXT PRIMARY KEY,
+        template_id INTEGER NOT NULL,
+        assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
     
     conn.commit()
     conn.close()
@@ -496,7 +510,6 @@ def enable_user(data: dict = Body(...)):
     conn.close()
     return {"status": "ok"}
 
-# ==================== 管理员：重置密码 ====================
 @app.post("/admin/users/reset_password")
 def admin_reset_password(data: dict = Body(...)):
     admin_pwd = data.get('password')
@@ -510,21 +523,17 @@ def admin_reset_password(data: dict = Body(...)):
 
     conn = get_db()
     c = conn.cursor()
-    # 检查用户是否存在
     c.execute("SELECT id FROM users WHERE id=?", (user_id,))
     if not c.fetchone():
         conn.close()
         raise HTTPException(status_code=404, detail="用户不存在")
 
-    # 更新密码（使用 SHA256 哈希）
     password_hash = hashlib.sha256(new_password.encode()).hexdigest()
     c.execute("UPDATE users SET password_hash=? WHERE id=?", (password_hash, user_id))
     conn.commit()
     conn.close()
     return {"status": "ok", "message": "密码已重置"}
 
-
-# ==================== 管理员：删除用户 ====================
 @app.post("/admin/users/delete")
 def admin_delete_user(data: dict = Body(...)):
     admin_pwd = data.get('password')
@@ -537,21 +546,131 @@ def admin_delete_user(data: dict = Body(...)):
 
     conn = get_db()
     c = conn.cursor()
-    # 检查用户是否存在
     c.execute("SELECT id FROM users WHERE id=?", (user_id,))
     if not c.fetchone():
         conn.close()
         raise HTTPException(status_code=404, detail="用户不存在")
 
-    # 软删除：设置 disabled=1（推荐），或硬删除
-    # 硬删除会丢失数据，建议软删除
-    # 这里使用硬删除（因为您之前未使用 disabled，但您已添加 disabled 字段）
-    # 如果希望软删除，改为 UPDATE users SET disabled=1 WHERE id=?
     c.execute("DELETE FROM users WHERE id=?", (user_id,))
     conn.commit()
     conn.close()
     return {"status": "ok", "message": "用户已删除"}
+
+# ==================== 专属模板库管理 ====================
+
+@app.post("/admin/template_lib/list")
+def list_templates(data: dict = Body(...)):
+    if data.get("password") != ADMIN_PASSWORD:
+        raise HTTPException(status_code=403, detail="密码错误")
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT id, name, content, created_at FROM template_library ORDER BY id DESC")
+    rows = c.fetchall()
+    conn.close()
+    return {"ok": True, "templates": [
+        {"id": r[0], "name": r[1], "content": json.loads(r[2]), "created_at": r[3]}
+        for r in rows
+    ]}
+
+@app.post("/admin/template_lib/save")
+def save_template(data: dict = Body(...)):
+    if data.get("password") != ADMIN_PASSWORD:
+        raise HTTPException(status_code=403, detail="密码错误")
+    t_id = data.get("id")
+    name = (data.get("name") or "").strip()
+    content = data.get("content")
+    if not name or not content:
+        raise HTTPException(status_code=400, detail="名称和内容不能为空")
     
+    conn = get_db()
+    c = conn.cursor()
+    content_json = json.dumps(content, ensure_ascii=False)
+    if t_id:
+        c.execute("UPDATE template_library SET name=?, content=? WHERE id=?", (name, content_json, t_id))
+        if c.rowcount == 0:
+            conn.close()
+            raise HTTPException(status_code=404, detail="模板不存在")
+        new_id = t_id
+    else:
+        c.execute("INSERT INTO template_library (name, content) VALUES (?, ?)", (name, content_json))
+        new_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return {"ok": True, "id": new_id}
+
+@app.post("/admin/template_lib/delete")
+def delete_template(data: dict = Body(...)):
+    if data.get("password") != ADMIN_PASSWORD:
+        raise HTTPException(status_code=403, detail="密码错误")
+    t_id = data.get("id")
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("DELETE FROM template_library WHERE id=?", (t_id,))
+    c.execute("DELETE FROM user_assign WHERE template_id=?", (t_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+# ==================== 用户指派 ====================
+
+@app.post("/admin/user/assign")
+def assign_user(data: dict = Body(...)):
+    if data.get("password") != ADMIN_PASSWORD:
+        raise HTTPException(status_code=403, detail="密码错误")
+    user_id = data.get("user_id")
+    t_id = data.get("template_id")
+    if not user_id or not t_id:
+        raise HTTPException(status_code=400, detail="参数错误")
+    
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM user_assign WHERE user_id=?", (user_id,))
+    if c.fetchone():
+        c.execute("UPDATE user_assign SET template_id=?, assigned_at=CURRENT_TIMESTAMP WHERE user_id=?", (t_id, user_id))
+    else:
+        c.execute("INSERT INTO user_assign (user_id, template_id) VALUES (?, ?)", (user_id, t_id))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+@app.post("/admin/user/unassign")
+def unassign_user(data: dict = Body(...)):
+    if data.get("password") != ADMIN_PASSWORD:
+        raise HTTPException(status_code=403, detail="密码错误")
+    user_id = data.get("user_id")
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("DELETE FROM user_assign WHERE user_id=?", (user_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
+
+# ==================== 用户端拉取 ====================
+
+@app.get("/user/assigned_template")
+def get_assigned_template(user_id: str):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT template_id FROM user_assign WHERE user_id=?", (user_id,))
+    row = c.fetchone()
+    if not row:
+        conn.close()
+        return {"has_assign": False}
+    
+    t_id = row[0]
+    c.execute("SELECT name, content FROM template_library WHERE id=?", (t_id,))
+    t = c.fetchone()
+    conn.close()
+    
+    if not t:
+        return {"has_assign": False}
+    
+    return {
+        "has_assign": True,
+        "name": t[0],
+        "content": json.loads(t[1])
+    }
+
 @app.get("/")
 def root():
     return {"message": "ID Rent System API is running"}
